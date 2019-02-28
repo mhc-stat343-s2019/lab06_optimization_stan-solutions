@@ -1,0 +1,117 @@
+---
+title: "Stat 343: Optimization in Stan"
+output:
+  pdf_document
+---
+
+\newcommand{\simiid}{{\mathrel {\mathop {\sim}\limits _{}^{\rm iid}}\,}}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggplot2)
+```
+
+# Wind Energy
+
+This example is adapted from Chihara and Hesterberg (2011).  Here's a quote from them:
+
+    "[U]nderstanding the characteristics of wind speed is important.  Engineers use wind speed information to determine suitable locations to build a wind turbine or to optimize the design of a turbine.  Utility companies use this information to make predictions on engery avaiabilty during peak demand periods (say, during a heat wave) or to estimate yearly revenue.
+
+    The Weibull distribution is the most commonly used probability distribution used to model wind speed ... The Weibull distribution has a density function with two parameters, the shape parameter $k > 0$ and the scale parameter $\lambda > 0$."
+
+If $X \sim \text{Weibull}(k, \lambda)$, then it has pdf
+$$f(x | k, \lambda) = \frac{k x^{k - 1}}{\lambda^k}e^{-(x/\lambda)^k}$$
+
+In R, the density function can be evaluated with the `dweibull` function, which has the following arguments:
+
+* `x`: vector of quantiles.
+* `shape`, `scale`: shape and scale parameters, the latter defaulting to 1.
+* `log`: logical; if TRUE, returns the log of the pdf.
+
+Here are plots of the Weibull density function for a few different values of the parameters $k$ and $\lambda$:
+
+```{r}
+library(tidyverse)
+library(lubridate)
+
+ggplot(data = data.frame(x = c(0, 10)), mapping = aes(x = x)) +
+  stat_function(fun = dweibull, args = list(shape = 1, scale = 1)) +
+  stat_function(fun = dweibull, args = list(shape = 1, scale = 2), color = "red") +
+  stat_function(fun = dweibull, args = list(shape = 2, scale = 1), color = "orange") +
+  stat_function(fun = dweibull, args = list(shape = 5, scale = 5), color = "cornflowerblue")
+```
+
+In this lab, you'll fit a Weibull distribution to model measurements of daily average wind speeds in meters/second at the site of a wind turbine in Minnesota over the course of 168 days from February 14 to August 1, 2010 (there were no data for July 2).  The following R code reads the data in and makes a couple of initial plots:
+
+```{r}
+wind_speeds <- read_csv("http://www.evanlray.com/data/chihara_hesterberg/Turbine.csv") %>%
+  mutate(Date = mdy(paste0(Date2010, " 2010")))
+head(wind_speeds)
+
+ggplot(data = wind_speeds, mapping = aes(x = Date, y = AveSpeed)) +
+  geom_line()
+
+ggplot(data = wind_speeds, mapping = aes(x = AveSpeed)) +
+  geom_histogram(binwidth = 1, center = 0.5, mapping = aes(y = ..density..)) +
+  geom_density()
+```
+
+Although data collected over time are basically never independent, let's model these observations as independent for the sake of having an example that's feasible to work with.  So, we'll use the model
+
+$X_i \simiid \text{Weibull}(k, \lambda)$,
+
+where $X_i$ is the observed average wind speed for day $i$.
+
+#### 1. Set up model definition in stan
+
+I have set up a skeleton of the stan file, included in this repository.  Edit that file now to add necessary declarations and model statements for this model to the data, parameters, and model blocks.  The stan function to use for the Weibull distribution is called `weibull`.
+
+#### 2. Perform estimation
+
+You will need to load the rstan package, set up a list with the data for the stan model, compile the model, and call `optimizing` to obtain the maximum likelihood estimates of the model parameters.
+
+```{r, results = "hide"}
+# Load the rstan package
+library(rstan)
+
+
+# Set up list with data Stan will need to know about
+stan_data <- list(
+  n = nrow(wind_speeds),
+  x = wind_speeds$AveSpeed
+)
+
+# Compile the Stan model definition to an executable.  Takes a few seconds to run.
+wind_model_compiled <- stan_model(file = "wind_model.stan")
+
+# Call Stan to do optimization
+wind_fit <- optimizing(wind_model_compiled,
+  data = stan_data,
+  seed = 8742,
+  init = "random"
+)
+```
+
+```{r}
+# Here's a look at the return object, which is a list with 3 components:
+#  * par is a named vector of parameter estimates
+#  * value is the value of the log-likelihood at the maximum,
+#    after dropping constants that don't involve the parameters
+#  * return_code is 0 if everything went well in the optimization procedure,
+#    otherwise an error code to be sad about
+wind_fit
+```
+
+#### 3. Make a plot
+
+Add a new layer to the plot below showing the pdf of the Weibull distribution corresponding to the maximum likelihood parameter estimates.
+
+```{r}
+ggplot(data = wind_speeds, mapping = aes(x = AveSpeed)) +
+  geom_histogram(binwidth = 1, center = 0.5, mapping = aes(y = ..density..)) +
+  geom_density() +
+  stat_function(fun = dweibull, args = list(shape = wind_fit$par["k"], scale = wind_fit$par["lambda"]), color = "cornflowerblue") +
+  theme_bw()
+```
